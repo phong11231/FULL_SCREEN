@@ -18,10 +18,13 @@
   "use strict";
 
   // ----------------------- CONFIG ---------------------------------------
-  const DEF_BUILD = "d2";          // arms-race build tag (defense)
+  const DEF_BUILD = "d3";          // arms-race build tag (defense)
   const CONFIG = {
     durationSec: 600,              // 10 phút
     maxStrikes: 1,                 // 1 vi phạm = out ngay
+    // d3 server-authoritative: đặt URL (vd "http://localhost:8799") để bật.
+    // null -> degrade về d2 (client-only) — dùng cho GitHub Pages tĩnh.
+    server: null,
     policy: {
       // kind -> "critical" | "warning"
       "visibility-hidden": "critical",
@@ -105,6 +108,7 @@
     const level = CONFIG.policy[kind] || "warning";
     const sev = level === "critical" ? SEV.ALERT : SEV.WARN;
     log(kind, sev, detail || "");
+    if (window.D3Guard && window.D3Guard.available) window.D3Guard.reportViolation(kind);
 
     if (level === "critical") {
       flashBanner("⛔ VI PHẠM NGHIÊM TRỌNG");
@@ -266,6 +270,20 @@
     log("boot", SEV.INFO, "bài thi bắt đầu trên " + location.host);
     startTimer();
 
+    // d3: nếu cấu hình server, mở phiên server-authoritative.
+    if (CONFIG.server && window.D3Guard) {
+      log("d3", SEV.INFO, "đang kết nối server xác thực…");
+      window.D3Guard.start(CONFIG.server, {
+        onFlagged: function (reasons) {
+          const r = reasons && reasons.length ? reasons[reasons.length - 1] : "bất thường";
+          autoSubmit("SERVER phát hiện: " + r);
+        }
+      }).then(function (r) {
+        if (r) log("d3", SEV.INFO, "server OK · session " + String(r.sessionId).slice(0, 8) + "…");
+        else log("d3", SEV.WARN, "server không với tới — chạy chế độ d2 (client-only)");
+      });
+    }
+
     console.log(
       "%c[DEFENSE_v1.0 READY]%c exam armed — origin=" + DEFENSE.origin,
       "background:#39d98a;color:#04170e;font-weight:700;padding:2px 6px;border-radius:4px",
@@ -327,6 +345,23 @@
     el.rIntegrity.textContent = DEFENSE.integrity.ok ? "ok" : "TAMPERED";
     el.exam.hidden = true;
     el.resultOverlay.hidden = false;
+
+    // d3: server chấm điểm & ra phán quyết (ưu tiên hơn client).
+    if (window.D3Guard && window.D3Guard.available) {
+      el.resultReason.textContent = reason + " · đang chờ server xác thực…";
+      window.D3Guard.submit(DEFENSE.answers).then(function (sv) {
+        window.D3Guard.stop();
+        if (!sv) { el.resultReason.textContent = reason + " · (server mất kết nối — dùng kết quả client)"; return; }
+        el.scoreVal.textContent = String(sv.score);
+        el.scoreMax.textContent = String(sv.max);
+        el.rIntegrity.textContent = sv.flagged ? "FLAGGED (server)" : "ok (server)";
+        el.resultTitle.textContent = sv.flagged ? "Phiên thi BỊ GẮN CỜ (server)" : "Đã nộp — server xác nhận";
+        el.resultReason.className = "result-reason" + (sv.flagged ? " result-reason--auto" : "");
+        el.resultReason.textContent = reason + " · SERVER: " +
+          (sv.flagged ? "GIAN LẬN — " + (sv.reasons[sv.reasons.length - 1] || "") : "hợp lệ") +
+          " · điểm server: " + sv.score + "/" + sv.max;
+      });
+    }
 
     // thoát fullscreen cho gọn
     if (document.fullscreenElement) (document.exitFullscreen || function(){}).call(document);

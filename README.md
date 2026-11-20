@@ -5,14 +5,23 @@ trên hệ thống của chính bạn.** Hai thành phần **tách rời hoàn t
 
 ```
 redblue-lab/
-├─ defense/        # WEB PHÒNG THỦ — push GitHub / deploy đâu cũng chạy
+├─ defense/            # WEB PHÒNG THỦ — push GitHub / deploy đâu cũng chạy
 │  ├─ index.html
 │  ├─ style.css
-│  └─ app.js
-└─ attack/         # EXTENSION TẤN CÔNG — tự chạy khi mở web
-   ├─ manifest.json
-   └─ content.js
+│  ├─ app.js           # DEFENSE d3: 1-strike + cross-realm + hỗ trợ server
+│  └─ guard-server.js  # lớp beacon cho chế độ server (d3)
+├─ defense-server/
+│  └─ server.py        # DEFENSE d3 — server-authoritative (Python stdlib)
+├─ attack/             # EXTENSION TẤN CÔNG — tự chạy khi mở web (ATTACK v2)
+│  ├─ manifest.json
+│  ├─ content.js
+│  └─ popup.html
+└─ ARMS_RACE.md        # nhật ký leo thang red/blue từng vòng
 ```
+
+> Chi tiết các vòng tấn công/phòng thủ và kết quả đo: xem **ARMS_RACE.md**.
+> Mặc định web chạy chế độ **d2** (client-only) cho GitHub Pages tĩnh; bật **d3**
+> bằng cách chạy `defense-server/server.py` và đặt `CONFIG.server` trong `app.js`.
 
 ## 1) Chạy web phòng thủ (DEFENSE_v1.0)
 - Mở thẳng `defense/index.html`, hoặc chạy server tĩnh:
