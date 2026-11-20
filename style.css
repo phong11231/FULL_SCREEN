@@ -1,0 +1,135 @@
+/* DEFENSE_v1.0 — style.css (platform-agnostic, no external assets) */
+:root {
+  --bg: #0b0f17;
+  --panel: #131a26;
+  --panel-2: #0f1520;
+  --border: #223049;
+  --text: #e6edf6;
+  --muted: #8ea0b8;
+  --accent: #39d98a;
+  --accent-2: #4aa8ff;
+  --warn: #f5a623;
+  --danger: #ff5c6c;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: radial-gradient(1200px 600px at 80% -10%, #16233a 0%, var(--bg) 55%);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.app-header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; }
+.subtitle { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+.status {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.status--init   { color: var(--muted); }
+.status--ready  { color: #04170e; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.status--alert  { color: #1a0b0e; background: var(--danger); border-color: var(--danger); font-weight: 700; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 18px;
+  padding: 20px 24px;
+}
+@media (max-width: 880px) { .layout { grid-template-columns: 1fr; } }
+
+.panel {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+}
+.panel h2 { margin: 0 0 6px; font-size: 16px; }
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+
+.field { display: block; margin-bottom: 14px; }
+.field > span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+textarea {
+  width: 100%;
+  background: #0a0e16;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 12px;
+  font-family: var(--mono);
+  resize: vertical;
+}
+textarea:focus { outline: 2px solid var(--accent-2); outline-offset: 0; }
+
+.controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.btn {
+  background: #1b2638;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform .05s ease, background .15s ease;
+}
+.btn:hover { background: #22304a; }
+.btn:active { transform: translateY(1px); }
+.btn--primary { background: var(--accent-2); color: #041224; border-color: var(--accent-2); font-weight: 700; }
+.btn--ghost { background: transparent; }
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin: 0;
+}
+.metrics > div {
+  background: #0a0e16;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.metrics dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.metrics dd { margin: 4px 0 0; font-family: var(--mono); font-size: 15px; }
+
+.log-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.log-actions { display: flex; gap: 8px; }
+
+.table-wrap { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  position: sticky; top: 0;
+  background: #0a0e16;
+  text-align: left;
+  padding: 10px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+tbody td { padding: 9px 10px; border-bottom: 1px solid #1a2436; font-family: var(--mono); vertical-align: top; }
+tbody tr:hover { background: #0e1626; }
+
+.sev { font-weight: 700; }
+.sev--info { color: var(--accent-2); }
+.sev--warn { color: var(--warn); }
+.sev--alert { color: var(--danger); }
+
+.app-footer { color: var(--muted); font-size: 12px; padding: 14px 24px; border-top: 1px solid var(--border); }
+.app-footer code { color: var(--accent); }

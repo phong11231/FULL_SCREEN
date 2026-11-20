@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DEFENSE_v1.0 — Client Integrity Monitor</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!--
+    DEFENSE_v1.0 — Client-side integrity / focus monitor (lab).
+    Platform-agnostic: no hard-coded URL/host. Deploy anywhere (GitHub Pages,
+    Netlify, Vercel, custom domain) — logic reads location at runtime only.
+    NOTE: client JS can be disabled/bypassed; real systems MUST re-validate
+    on the server. This is a demonstration surface for a red/blue lab.
+  -->
+  <header class="app-header">
+    <div>
+      <h1>DEFENSE_v1.0</h1>
+      <p class="subtitle">Client Integrity Monitor — Lab</p>
+    </div>
+    <div id="status-banner" class="status status--init" role="status" aria-live="polite">
+      initializing…
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel" aria-labelledby="task-title">
+      <h2 id="task-title">Monitored Task Surface</h2>
+      <p class="hint">Anything you do here is observed by the client-side monitor.</p>
+
+      <label class="field">
+        <span>Answer / input (typing speed is tracked)</span>
+        <textarea id="answer-input" rows="5" placeholder="Type here…"></textarea>
+      </label>
+
+      <div class="controls">
+        <button id="toggle-fullscreen" type="button" class="btn">Toggle Fullscreen</button>
+        <button id="submit-btn" type="button" class="btn btn--primary">Submit</button>
+      </div>
+
+      <dl class="metrics">
+        <div><dt>visibility</dt><dd id="m-visibility">visible</dd></div>
+        <div><dt>focus</dt><dd id="m-focus">focused</dd></div>
+        <div><dt>fullscreen</dt><dd id="m-fullscreen">no</dd></div>
+        <div><dt>integrity</dt><dd id="m-integrity">ok</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel" aria-labelledby="log-title">
+      <div class="log-head">
+        <h2 id="log-title">Live Event Log (<span id="log-count">0</span>)</h2>
+        <div class="log-actions">
+          <button id="export-json" type="button" class="btn">Export JSON</button>
+          <button id="clear-log" type="button" class="btn btn--ghost">Clear</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="log-table">
+          <thead>
+            <tr><th>#</th><th>time</th><th>type</th><th>severity</th><th>detail</th></tr>
+          </thead>
+          <tbody id="log-body"><!-- rows injected --></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <code>DEFENSE_v1.0</code> · platform-agnostic · client-side signals only
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
