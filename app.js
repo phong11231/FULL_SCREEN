@@ -1,302 +1,379 @@
 /* =====================================================================
-   DEFENSE_v1.0 — app.js
-   Client-side integrity / focus monitor (red/blue lab).
+   DEFENSE_v1.0 — app.js  (Exam + anti-cheat auto-submit)
+   Red/blue lab defensive surface.
 
-   Design:
-   - STANDALONE. Does not know about any extension. Works on its own.
-   - Platform-agnostic. No hard-coded host/URL; reads location at runtime.
-   - Relies on standard browser signals (visibilitychange, blur/focus,
-     fullscreenchange, keydown, input timing) — the same generic surface
-     an attacker would try to neutralize.
-   - Keeps a local API (window.__DEFENSE__) only for ITS OWN use
-     (live table + JSON export). The attack side does NOT depend on it.
+   - STANDALONE, platform-agnostic (no hard-coded host).
+   - Monitors standard signals: visibilitychange, blur/focus,
+     fullscreenchange, suspicious keydown, rapid input/submit.
+   - AUTO-SUBMIT POLICY:
+       * CRITICAL  -> nộp ngay lập tức
+       * WARNING   -> +1 strike; đủ maxStrikes -> nộp
+       * timeout   -> nộp
+   - Integrity watchdog phát hiện can thiệp (bị extension vá API).
 
-   REMINDER: client-side signals are advisory only. A real system must
-   re-validate every decision on the server. This page proves nothing by
-   itself — it only observes.
+   NHẮC LẠI: chấm điểm/kết luận ở client KHÔNG đáng tin. Hệ thống thật
+   phải nộp đáp án lên server và xác thực ở đó. Trang này chỉ minh hoạ.
    ===================================================================== */
 (function () {
   "use strict";
 
-  // ---- Keep pristine references early (defense-in-depth) ----------------
+  // ----------------------- CONFIG ---------------------------------------
+  const CONFIG = {
+    durationSec: 600,              // 10 phút
+    maxStrikes: 3,
+    policy: {
+      // kind -> "critical" | "warning"
+      "visibility-hidden": "critical",
+      "integrity-tamper": "critical",
+      "rapid-submit":      "critical",
+      "blur":              "warning",
+      "fullscreen-exit":   "warning",
+      "suspicious-key":    "warning",
+      "rapid-input":       "warning",
+    },
+    requireFullscreen: true,
+    labMonitorVisible: true,       // hiện panel log (để demo). Đặt false khi "thi thật".
+  };
+
+  // Ngân hàng câu hỏi (sửa tuỳ ý). correct = index đáp án đúng.
+  const QUESTIONS = [
+    { q: "HTTP mặc định chạy ở cổng nào?", opts: ["21", "80", "443", "8080"], correct: 1 },
+    { q: "Lệnh Linux xem quyền file?", opts: ["ls -l", "cat", "cd", "pwd"], correct: 0 },
+    { q: "Tầng nào của OSI lo định tuyến (routing)?", opts: ["Data Link", "Network", "Transport", "Session"], correct: 1 },
+    { q: "Hàm băm nào ĐÃ được coi là yếu/không nên dùng?", opts: ["SHA-256", "MD5", "SHA-3", "BLAKE2"], correct: 1 },
+    { q: "XSS tấn công vào đâu?", opts: ["CSDL máy chủ", "Trình duyệt người dùng", "Router", "Kernel"], correct: 1 },
+  ];
+
+  // ----------------------- STATE ----------------------------------------
   const NATIVE = {
     addEventListener: EventTarget.prototype.addEventListener,
-    now: (performance && performance.now) ? performance.now.bind(performance) : Date.now,
+    now: (window.performance && performance.now) ? performance.now.bind(performance) : Date.now,
     AEL_src: Function.prototype.toString.call(EventTarget.prototype.addEventListener),
   };
-
   const DEFENSE = {
     version: "DEFENSE_v1.0",
-    startedAt: new Date().toISOString(),
-    origin: location.origin,          // runtime, not hard-coded
+    startedAt: null,
+    origin: location.origin,
     logs: [],
-    counters: { visibility: 0, blur: 0, fullscreen: 0, keydown: 0, rapid: 0, integrity: 0 },
+    answers: {},
+    strikes: 0,
+    submitted: false,
+    submitReason: null,
     integrity: { ok: true, violations: [] },
+    counters: { visibility: 0, blur: 0, fullscreen: 0, keydown: 0, rapid: 0, integrity: 0 },
   };
+  Object.defineProperty(window, "__DEFENSE__", { value: DEFENSE, writable: false, configurable: false });
 
-  // ---- Logging ----------------------------------------------------------
   const SEV = { INFO: "info", WARN: "warn", ALERT: "alert" };
+  const $ = (id) => document.getElementById(id);
+  const el = {};
+  let timerId = null, remaining = CONFIG.durationSec, started = false;
 
+  // ----------------------- LOGGING --------------------------------------
   function log(type, severity, detail) {
-    const entry = {
+    const e = {
       i: DEFENSE.logs.length + 1,
       t: new Date().toISOString(),
       ms: Math.round(NATIVE.now()),
-      type: type,
-      severity: severity,
-      detail: detail || "",
-      url: location.href,
+      type, severity, detail: detail || "", url: location.href,
     };
-    DEFENSE.logs.push(entry);
-    renderRow(entry);
-    updateCount();
-    if (severity === SEV.ALERT) raiseAlert();
-    return entry;
+    DEFENSE.logs.push(e);
+    renderRow(e);
+    return e;
   }
-
-  // ---- DOM refs ---------------------------------------------------------
-  const $ = (id) => document.getElementById(id);
-  const el = {};
-  function cacheEls() {
-    el.banner = $("status-banner");
-    el.body = $("log-body");
-    el.count = $("log-count");
-    el.mVis = $("m-visibility");
-    el.mFocus = $("m-focus");
-    el.mFull = $("m-fullscreen");
-    el.mInteg = $("m-integrity");
-    el.input = $("answer-input");
-    el.submit = $("submit-btn");
-    el.fs = $("toggle-fullscreen");
-    el.export = $("export-json");
-    el.clear = $("clear-log");
-  }
-
   function renderRow(e) {
-    if (!el.body) return;
+    if (!el.logBody) return;
     const tr = document.createElement("tr");
     tr.innerHTML =
       `<td>${e.i}</td>` +
       `<td>${e.t.split("T")[1].replace("Z", "")}</td>` +
-      `<td>${escapeHtml(e.type)}</td>` +
+      `<td>${esc(e.type)}</td>` +
       `<td class="sev sev--${e.severity}">${e.severity.toUpperCase()}</td>` +
-      `<td>${escapeHtml(e.detail)}</td>`;
-    el.body.prepend(tr);
+      `<td>${esc(e.detail)}</td>`;
+    el.logBody.prepend(tr);
   }
-  function updateCount() { if (el.count) el.count.textContent = String(DEFENSE.logs.length); }
-  function escapeHtml(s) {
+  function esc(s) {
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  function setBanner(text, cls) {
-    if (!el.banner) return;
-    el.banner.textContent = text;
-    el.banner.className = "status " + cls;
-  }
-  function raiseAlert() { setBanner("⚠ integrity alert", "status--alert"); }
+  // ----------------------- VIOLATION ENGINE -----------------------------
+  // Mọi tín hiệu bất thường đi qua đây -> ghi log + thực thi chính sách.
+  function violation(kind, detail) {
+    if (DEFENSE.submitted) return;
+    const level = CONFIG.policy[kind] || "warning";
+    const sev = level === "critical" ? SEV.ALERT : SEV.WARN;
+    log(kind, sev, detail || "");
 
-  // ---- 1) Visibility (tab switch / minimize) ----------------------------
-  function onVisibility() {
-    const state = document.visibilityState;
-    if (el.mVis) el.mVis.textContent = state;
-    if (document.hidden || state !== "visible") {
-      DEFENSE.counters.visibility++;
-      log("visibilitychange", SEV.ALERT, "page hidden / tab switched (state=" + state + ")");
-    } else {
-      log("visibilitychange", SEV.INFO, "page visible again");
+    if (level === "critical") {
+      flashBanner("⛔ VI PHẠM NGHIÊM TRỌNG");
+      autoSubmit("Phát hiện: " + prettyKind(kind) + " — nộp bài tự động.");
+      return;
+    }
+    // warning -> strike
+    DEFENSE.strikes++;
+    updateStrikeUI();
+    flashBanner("⚠ Cảnh cáo " + DEFENSE.strikes + "/" + CONFIG.maxStrikes);
+    if (DEFENSE.strikes >= CONFIG.maxStrikes) {
+      autoSubmit("Vượt quá " + CONFIG.maxStrikes + " cảnh cáo — nộp bài tự động.");
     }
   }
+  function prettyKind(k) {
+    return ({
+      "visibility-hidden": "rời tab / ẩn trang",
+      "integrity-tamper": "can thiệp mã giám sát",
+      "rapid-submit": "spam nộp bài",
+      "blur": "mất focus",
+      "fullscreen-exit": "thoát toàn màn hình",
+      "suspicious-key": "phím đáng ngờ",
+      "rapid-input": "nhập liệu bất thường",
+    })[k] || k;
+  }
 
-  // ---- 2) Window focus/blur --------------------------------------------
+  // ----------------------- MONITORS -------------------------------------
+  function onVisibility() {
+    if (!started) return;
+    if (document.hidden || document.visibilityState !== "visible") {
+      DEFENSE.counters.visibility++;
+      violation("visibility-hidden", "state=" + document.visibilityState);
+    }
+  }
   function onBlur() {
-    if (el.mFocus) el.mFocus.textContent = "blurred";
+    if (!started) return;
     DEFENSE.counters.blur++;
-    log("blur", SEV.WARN, "window lost focus");
-  }
-  function onFocus() {
-    if (el.mFocus) el.mFocus.textContent = "focused";
-    log("focus", SEV.INFO, "window regained focus");
-  }
-
-  // ---- 3) Fullscreen ----------------------------------------------------
-  function fsElement() {
-    return document.fullscreenElement || document.webkitFullscreenElement || null;
+    violation("blur", "cửa sổ mất focus");
   }
   function onFullscreen() {
-    const active = !!fsElement();
-    if (el.mFull) el.mFull.textContent = active ? "yes" : "no";
-    if (active) log("fullscreenchange", SEV.INFO, "entered fullscreen");
-    else { DEFENSE.counters.fullscreen++; log("fullscreenchange", SEV.WARN, "exited fullscreen"); }
-  }
-  function toggleFullscreen() {
-    if (fsElement()) {
-      (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
-    } else {
-      const d = document.documentElement;
-      (d.requestFullscreen || d.webkitRequestFullscreen || function(){}).call(d);
+    if (!started) return;
+    const active = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (!active) {
+      DEFENSE.counters.fullscreen++;
+      violation("fullscreen-exit", "đã thoát toàn màn hình");
     }
   }
-
-  // ---- 4) Suspicious keydown -------------------------------------------
-  // Devtools / copy / paste / print / screenshot / save shortcuts.
   function onKeydown(ev) {
+    if (!started) return;
     const k = (ev.key || "").toLowerCase();
-    const combo = (ev.ctrlKey ? "Ctrl+" : "") + (ev.metaKey ? "Meta+" : "") +
-                  (ev.altKey ? "Alt+" : "") + (ev.shiftKey ? "Shift+" : "") + (ev.key || "");
-    let suspicious = null;
-    if (k === "f12") suspicious = "DevTools (F12)";
-    else if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (k === "i" || k === "j" || k === "c"))
-      suspicious = "DevTools (" + combo + ")";
-    else if ((ev.ctrlKey || ev.metaKey) && k === "u") suspicious = "View source";
-    else if ((ev.ctrlKey || ev.metaKey) && (k === "c" || k === "v" || k === "x"))
-      suspicious = "Clipboard (" + combo + ")";
-    else if ((ev.ctrlKey || ev.metaKey) && (k === "p" || k === "s")) suspicious = combo;
-    else if (k === "printscreen") suspicious = "PrintScreen";
-    if (suspicious) {
+    let sus = null;
+    if (k === "f12") sus = "F12 (DevTools)";
+    else if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (k === "i" || k === "j" || k === "c")) sus = "DevTools";
+    else if ((ev.ctrlKey || ev.metaKey) && k === "u") sus = "View source";
+    else if ((ev.ctrlKey || ev.metaKey) && (k === "c" || k === "v" || k === "x")) sus = "Clipboard";
+    else if ((ev.ctrlKey || ev.metaKey) && (k === "p" || k === "s")) sus = "Print/Save";
+    else if (k === "printscreen") sus = "PrintScreen";
+    if (sus) {
       DEFENSE.counters.keydown++;
-      log("keydown", SEV.WARN, "suspicious: " + suspicious);
+      violation("suspicious-key", sus);
     }
   }
-
-  // ---- 5) Rapid / bot-like input & submit ------------------------------
   let lastKeyTs = 0, fastRun = 0;
   function onInputTiming() {
-    const now = NATIVE.now();
-    const gap = now - lastKeyTs;
-    lastKeyTs = now;
-    if (gap < 30) {                        // <30ms between chars → non-human
-      fastRun++;
-      if (fastRun === 5) {
-        DEFENSE.counters.rapid++;
-        log("rapid-input", SEV.WARN, "burst of ultra-fast input (paste/automation?)");
-      }
-    } else { fastRun = 0; }
-  }
-  let lastSubmit = 0;
-  function onSubmit() {
-    const now = NATIVE.now();
-    const gap = now - lastSubmit;
-    if (lastSubmit && gap < 800) {
-      DEFENSE.counters.rapid++;
-      log("rapid-submit", SEV.ALERT, "submit spamming (" + Math.round(gap) + "ms apart)");
-    } else {
-      log("submit", SEV.INFO, "answer submitted");
-    }
-    lastSubmit = now;
+    const now = NATIVE.now(), gap = now - lastKeyTs; lastKeyTs = now;
+    if (gap < 25) { if (++fastRun === 6) { DEFENSE.counters.rapid++; violation("rapid-input", "gõ/dán quá nhanh"); } }
+    else fastRun = 0;
   }
 
-  // ---- 6) Integrity watchdog -------------------------------------------
-  // Heuristics that TRIP when something tampers with core APIs. This is how
-  // naive bypasses get caught -> gives the lab a real pass/blocked outcome.
+  // ----------------------- INTEGRITY WATCHDOG ---------------------------
   function integrityCheck() {
     const v = [];
-
-    // (a) addEventListener monkey-patched?
     const curSrc = Function.prototype.toString.call(EventTarget.prototype.addEventListener);
-    if (curSrc !== NATIVE.AEL_src || !/\[native code\]/.test(curSrc))
-      v.push("addEventListener patched");
-
-    // (b) visibilityState overridden as own-property on the instance?
+    if (curSrc !== NATIVE.AEL_src || !/\[native code\]/.test(curSrc)) v.push("addEventListener patched");
     if (Object.prototype.hasOwnProperty.call(document, "visibilityState") ||
-        Object.prototype.hasOwnProperty.call(document, "hidden"))
-      v.push("visibilityState/hidden spoofed on instance");
-
-    // (c) getter no longer native?
+        Object.prototype.hasOwnProperty.call(document, "hidden")) v.push("visibilityState spoofed (instance)");
     const d = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
-    if (d && d.get && !/\[native code\]/.test(Function.prototype.toString.call(d.get)))
-      v.push("visibilityState getter replaced");
-
-    // (d) hasFocus lying while we were blurred?
-    // (observational only)
+    if (d && d.get && !/\[native code\]/.test(Function.prototype.toString.call(d.get))) v.push("visibilityState getter replaced");
 
     if (v.length) {
       DEFENSE.integrity.ok = false;
-      // record only new violations
-      v.forEach((msg) => {
-        if (!DEFENSE.integrity.violations.includes(msg)) {
-          DEFENSE.integrity.violations.push(msg);
+      v.forEach((m) => {
+        if (!DEFENSE.integrity.violations.includes(m)) {
+          DEFENSE.integrity.violations.push(m);
           DEFENSE.counters.integrity++;
-          log("integrity", SEV.ALERT, "TAMPER: " + msg);
+          if (started) violation("integrity-tamper", m);
+          else log("integrity", SEV.ALERT, "TAMPER (pre-start): " + m);
         }
       });
-      if (el.mInteg) el.mInteg.textContent = "TAMPERED";
     }
   }
 
-  // ---- Export JSON ------------------------------------------------------
-  function exportJSON() {
-    const payload = {
-      meta: {
-        version: DEFENSE.version,
-        origin: DEFENSE.origin,
-        href: location.href,
-        userAgent: navigator.userAgent,
-        startedAt: DEFENSE.startedAt,
-        exportedAt: new Date().toISOString(),
-      },
-      counters: DEFENSE.counters,
-      integrity: DEFENSE.integrity,
-      logs: DEFENSE.logs,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "defense_v1_log_" + Date.now() + ".json";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    log("export", SEV.INFO, "JSON log exported (" + DEFENSE.logs.length + " entries)");
+  // ----------------------- EXAM FLOW ------------------------------------
+  function buildQuestions() {
+    el.questions.innerHTML = "";
+    QUESTIONS.forEach((item, qi) => {
+      const box = document.createElement("div");
+      box.className = "qcard";
+      let html = `<div class="qtext"><span class="qnum">${qi + 1}.</span> ${esc(item.q)}</div><div class="opts">`;
+      item.opts.forEach((opt, oi) => {
+        const id = `q${qi}_o${oi}`;
+        html += `<label class="opt"><input type="radio" name="q${qi}" value="${oi}" id="${id}"> <span>${esc(opt)}</span></label>`;
+      });
+      html += `</div>`;
+      box.innerHTML = html;
+      el.questions.appendChild(box);
+    });
+    el.totalCount.textContent = String(QUESTIONS.length);
+    el.questions.addEventListener("change", (e) => {
+      if (e.target && e.target.name && e.target.name.startsWith("q")) {
+        DEFENSE.answers[e.target.name] = Number(e.target.value);
+        el.answeredCount.textContent = String(Object.keys(DEFENSE.answers).length);
+      }
+    });
   }
 
-  function clearLog() {
-    DEFENSE.logs.length = 0;
-    if (el.body) el.body.innerHTML = "";
-    updateCount();
-  }
-
-  // ---- Wire up ----------------------------------------------------------
-  function bind() {
-    cacheEls();
-
-    // Use native addEventListener reference so a later override of the
-    // prototype method does not silently drop our own handlers.
-    const on = (t, ev, fn, opts) => NATIVE.addEventListener.call(t, ev, fn, opts);
-
-    on(document, "visibilitychange", onVisibility);
-    on(window, "blur", onBlur);
-    on(window, "focus", onFocus);
-    on(document, "fullscreenchange", onFullscreen);
-    on(document, "webkitfullscreenchange", onFullscreen);
-    on(document, "keydown", onKeydown, true);
-
-    if (el.input) on(el.input, "input", onInputTiming);
-    if (el.submit) on(el.submit, "click", onSubmit);
-    if (el.fs) on(el.fs, "click", toggleFullscreen);
-    if (el.export) on(el.export, "click", exportJSON);
-    if (el.clear) on(el.clear, "click", clearLog);
-
-    // periodic integrity scan
-    setInterval(integrityCheck, 1000);
-    integrityCheck();
-
+  function startExam() {
+    if (started) return;
+    if (CONFIG.requireFullscreen) {
+      const root = document.documentElement;
+      (root.requestFullscreen || root.webkitRequestFullscreen || function(){}).call(root);
+    }
+    started = true;
+    DEFENSE.startedAt = new Date().toISOString();
+    el.startOverlay.hidden = true;
+    el.exam.hidden = false;
+    if (CONFIG.labMonitorVisible) el.monitor.hidden = false;
     setBanner("[DEFENSE_v1.0 READY]", "status--ready");
-    log("boot", SEV.INFO, "monitor armed on " + location.host);
+    log("boot", SEV.INFO, "bài thi bắt đầu trên " + location.host);
+    startTimer();
 
-    // Required console banner
     console.log(
-      "%c[DEFENSE_v1.0 READY]%c monitor armed — origin=" + DEFENSE.origin,
+      "%c[DEFENSE_v1.0 READY]%c exam armed — origin=" + DEFENSE.origin,
       "background:#39d98a;color:#04170e;font-weight:700;padding:2px 6px;border-radius:4px",
       "color:#39d98a"
     );
   }
 
-  // Expose for THIS page's own tooling only (export/debug).
-  Object.defineProperty(window, "__DEFENSE__", { value: DEFENSE, writable: false, configurable: false });
+  function startTimer() {
+    remaining = CONFIG.durationSec;
+    renderTimer();
+    timerId = setInterval(() => {
+      remaining--;
+      renderTimer();
+      if (remaining <= 0) { clearInterval(timerId); autoSubmit("Hết giờ — nộp bài tự động."); }
+    }, 1000);
+  }
+  function renderTimer() {
+    const m = Math.floor(remaining / 60), s = remaining % 60;
+    const txt = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    if (el.timer) el.timer.textContent = txt;
+  }
 
-  if (document.readyState === "loading")
-    NATIVE.addEventListener.call(document, "DOMContentLoaded", bind);
+  // Nộp thủ công
+  let lastSubmit = 0;
+  function manualSubmit() {
+    const now = NATIVE.now();
+    if (lastSubmit && now - lastSubmit < 800) {
+      violation("rapid-submit", Math.round(now - lastSubmit) + "ms apart");
+      return;
+    }
+    lastSubmit = now;
+    finalize("Bạn đã nộp bài.");
+  }
+
+  function autoSubmit(reason) { finalize(reason, true); }
+
+  function finalize(reason, auto) {
+    if (DEFENSE.submitted) return;
+    DEFENSE.submitted = true;
+    DEFENSE.submitReason = reason;
+    if (timerId) clearInterval(timerId);
+
+    // Chấm điểm (client-side, chỉ để demo)
+    let score = 0;
+    QUESTIONS.forEach((item, qi) => { if (DEFENSE.answers["q" + qi] === item.correct) score++; });
+
+    const elapsed = CONFIG.durationSec - remaining;
+    log("submit", auto ? SEV.ALERT : SEV.INFO, (auto ? "AUTO: " : "") + reason + " | score=" + score + "/" + QUESTIONS.length);
+
+    // Hiển thị kết quả
+    el.resultTitle.textContent = auto ? "Bài thi bị nộp tự động" : "Đã nộp bài";
+    el.resultReason.textContent = reason;
+    el.resultReason.className = "result-reason" + (auto ? " result-reason--auto" : "");
+    el.scoreVal.textContent = String(score);
+    el.scoreMax.textContent = String(QUESTIONS.length);
+    el.rElapsed.textContent = Math.floor(elapsed / 60) + "m" + (elapsed % 60) + "s";
+    el.rStrikes.textContent = String(DEFENSE.strikes);
+    el.rEvents.textContent = String(DEFENSE.logs.length);
+    el.rIntegrity.textContent = DEFENSE.integrity.ok ? "ok" : "TAMPERED";
+    el.exam.hidden = true;
+    el.resultOverlay.hidden = false;
+
+    // thoát fullscreen cho gọn
+    if (document.fullscreenElement) (document.exitFullscreen || function(){}).call(document);
+  }
+
+  // ----------------------- EXPORT ---------------------------------------
+  function exportJSON() {
+    const payload = {
+      meta: { version: DEFENSE.version, origin: DEFENSE.origin, href: location.href,
+        userAgent: navigator.userAgent, startedAt: DEFENSE.startedAt, exportedAt: new Date().toISOString(),
+        submitted: DEFENSE.submitted, submitReason: DEFENSE.submitReason },
+      counters: DEFENSE.counters, strikes: DEFENSE.strikes, integrity: DEFENSE.integrity,
+      answers: DEFENSE.answers, logs: DEFENSE.logs,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "exam_defense_v1_" + Date.now() + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ----------------------- UI HELPERS -----------------------------------
+  function setBanner(text, cls) { if (el.banner) { el.banner.textContent = text; el.banner.className = "status " + cls; } }
+  let flashTid = null;
+  function flashBanner(text) {
+    if (!el.banner) return;
+    el.banner.textContent = text;
+    el.banner.className = "status status--alert";
+    clearTimeout(flashTid);
+    flashTid = setTimeout(() => setBanner(started && !DEFENSE.submitted ? "armed" : "done",
+      started && !DEFENSE.submitted ? "status--ready" : "status--init"), 1500);
+  }
+  function updateStrikeUI() { if (el.strikeCount) el.strikeCount.textContent = String(DEFENSE.strikes); }
+
+  // ----------------------- BIND -----------------------------------------
+  function bind() {
+    el.startOverlay = $("start-overlay"); el.startBtn = $("start-btn");
+    el.exam = $("exam"); el.questions = $("questions");
+    el.timer = $("timer"); el.strikeCount = $("strike-count"); el.strikeMax = $("strike-max");
+    el.banner = $("status-banner"); el.submit = $("submit-btn");
+    el.answeredCount = $("answered-count"); el.totalCount = $("total-count");
+    el.monitor = $("monitor"); el.logBody = $("log-body");
+    el.export = $("export-json"); el.toggleMonitor = $("toggle-monitor");
+    el.resultOverlay = $("result-overlay"); el.resultTitle = $("result-title");
+    el.resultReason = $("result-reason"); el.scoreVal = $("score-val"); el.scoreMax = $("score-max");
+    el.rElapsed = $("r-elapsed"); el.rStrikes = $("r-strikes"); el.rEvents = $("r-events"); el.rIntegrity = $("r-integrity");
+    el.resultExport = $("result-export"); el.resultMonitor = $("result-monitor");
+
+    // labels
+    if ($("max-strikes")) $("max-strikes").textContent = String(CONFIG.maxStrikes);
+    if (el.strikeMax) el.strikeMax.textContent = String(CONFIG.maxStrikes);
+    if ($("dur-label")) $("dur-label").textContent = fmt(CONFIG.durationSec);
+    renderTimerLabel();
+
+    buildQuestions();
+
+    const on = (t, ev, fn, opts) => NATIVE.addEventListener.call(t, ev, fn, opts);
+    on(document, "visibilitychange", onVisibility);
+    on(window, "blur", onBlur);
+    on(document, "fullscreenchange", onFullscreen);
+    on(document, "webkitfullscreenchange", onFullscreen);
+    on(document, "keydown", onKeydown, true);
+    on(el.questions, "input", onInputTiming);
+
+    on(el.startBtn, "click", startExam);
+    on(el.submit, "click", manualSubmit);
+    on(el.export, "click", exportJSON);
+    on(el.resultExport, "click", exportJSON);
+    on(el.toggleMonitor, "click", () => { el.monitor.hidden = true; });
+    on(el.resultMonitor, "click", () => { el.monitor.hidden = false; });
+
+    setInterval(integrityCheck, 1000);
+    integrityCheck();
+  }
+  function fmt(sec) { return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0"); }
+  function renderTimerLabel() { if (el.timer) el.timer.textContent = fmt(CONFIG.durationSec); }
+
+  if (document.readyState === "loading") NATIVE.addEventListener.call(document, "DOMContentLoaded", bind);
   else bind();
 })();

@@ -3,72 +3,90 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DEFENSE_v1.0 — Client Integrity Monitor</title>
+  <title>DEFENSE_v1.0 — Bài thi được giám sát</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <!--
-    DEFENSE_v1.0 — Client-side integrity / focus monitor (lab).
-    Platform-agnostic: no hard-coded URL/host. Deploy anywhere (GitHub Pages,
-    Netlify, Vercel, custom domain) — logic reads location at runtime only.
-    NOTE: client JS can be disabled/bypassed; real systems MUST re-validate
-    on the server. This is a demonstration surface for a red/blue lab.
+    DEFENSE_v1.0 — Trang thi có giám sát chống gian lận (red/blue lab).
+    Platform-agnostic: không URL cứng. Auto-nộp khi phát hiện bất thường.
+    LƯU Ý: tín hiệu client chỉ mang tính hỗ trợ; hệ thống thật phải chấm &
+    xác thực lại ở server. Đây là bề mặt phòng thủ để kiểm thử.
   -->
-  <header class="app-header">
-    <div>
+
+  <!-- ===== Màn hình bắt đầu ===== -->
+  <div id="start-overlay" class="overlay">
+    <div class="card">
       <h1>DEFENSE_v1.0</h1>
-      <p class="subtitle">Client Integrity Monitor — Lab</p>
+      <p class="subtitle">Bài kiểm tra được giám sát</p>
+      <ul class="rules">
+        <li>Bài thi chạy ở chế độ <b>toàn màn hình</b>.</li>
+        <li><b>Rời tab / thu nhỏ / bị phát hiện can thiệp → tự động nộp ngay.</b></li>
+        <li>Mất focus, thoát fullscreen, phím đáng ngờ → tính <b>cảnh cáo</b>; đủ <b id="max-strikes">3</b> lần sẽ tự nộp.</li>
+        <li>Hết giờ (<b id="dur-label">10:00</b>) → tự nộp.</li>
+      </ul>
+      <button id="start-btn" class="btn btn--primary btn--lg">Bắt đầu (vào toàn màn hình)</button>
+      <p class="fineprint">Nhấn nút đồng nghĩa bạn đồng ý bị giám sát trong lab này.</p>
     </div>
-    <div id="status-banner" class="status status--init" role="status" aria-live="polite">
-      initializing…
+  </div>
+
+  <!-- ===== Khu vực làm bài ===== -->
+  <main id="exam" class="exam" hidden>
+    <header class="exam-head">
+      <div class="exam-title">DEFENSE_v1.0 · <span class="muted">Bài thi</span></div>
+      <div class="exam-stats">
+        <span class="chip">⏱ <b id="timer">10:00</b></span>
+        <span class="chip chip--warn">⚠ Cảnh cáo: <b id="strike-count">0</b>/<b id="strike-max">3</b></span>
+        <span id="status-banner" class="status status--init">armed</span>
+      </div>
+    </header>
+
+    <section class="questions" id="questions"><!-- câu hỏi inject --></section>
+
+    <div class="exam-foot">
+      <button id="submit-btn" class="btn btn--primary">Nộp bài</button>
+      <span class="muted">Đã trả lời: <b id="answered-count">0</b>/<b id="total-count">0</b></span>
     </div>
-  </header>
-
-  <main class="layout">
-    <section class="panel" aria-labelledby="task-title">
-      <h2 id="task-title">Monitored Task Surface</h2>
-      <p class="hint">Anything you do here is observed by the client-side monitor.</p>
-
-      <label class="field">
-        <span>Answer / input (typing speed is tracked)</span>
-        <textarea id="answer-input" rows="5" placeholder="Type here…"></textarea>
-      </label>
-
-      <div class="controls">
-        <button id="toggle-fullscreen" type="button" class="btn">Toggle Fullscreen</button>
-        <button id="submit-btn" type="button" class="btn btn--primary">Submit</button>
-      </div>
-
-      <dl class="metrics">
-        <div><dt>visibility</dt><dd id="m-visibility">visible</dd></div>
-        <div><dt>focus</dt><dd id="m-focus">focused</dd></div>
-        <div><dt>fullscreen</dt><dd id="m-fullscreen">no</dd></div>
-        <div><dt>integrity</dt><dd id="m-integrity">ok</dd></div>
-      </dl>
-    </section>
-
-    <section class="panel" aria-labelledby="log-title">
-      <div class="log-head">
-        <h2 id="log-title">Live Event Log (<span id="log-count">0</span>)</h2>
-        <div class="log-actions">
-          <button id="export-json" type="button" class="btn">Export JSON</button>
-          <button id="clear-log" type="button" class="btn btn--ghost">Clear</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table id="log-table">
-          <thead>
-            <tr><th>#</th><th>time</th><th>type</th><th>severity</th><th>detail</th></tr>
-          </thead>
-          <tbody id="log-body"><!-- rows injected --></tbody>
-        </table>
-      </div>
-    </section>
   </main>
 
-  <footer class="app-footer">
-    <code>DEFENSE_v1.0</code> · platform-agnostic · client-side signals only
-  </footer>
+  <!-- ===== Panel giám sát (lab) ===== -->
+  <aside id="monitor" class="monitor" hidden>
+    <div class="monitor-head">
+      <b>🛡️ DEFENSE — phát hiện</b>
+      <div class="log-actions">
+        <button id="export-json" class="btn btn--sm">Export JSON</button>
+        <button id="toggle-monitor" class="btn btn--sm btn--ghost">Ẩn</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table id="log-table">
+        <thead><tr><th>#</th><th>time</th><th>type</th><th>sev</th><th>detail</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+    </div>
+  </aside>
+
+  <!-- ===== Màn hình kết quả ===== -->
+  <div id="result-overlay" class="overlay" hidden>
+    <div class="card">
+      <h1 id="result-title">Đã nộp bài</h1>
+      <p id="result-reason" class="result-reason"></p>
+      <div class="score-box">
+        <div class="score-num"><b id="score-val">0</b>/<span id="score-max">0</span></div>
+        <div class="muted">điểm (chấm phía client — chỉ để demo)</div>
+      </div>
+      <dl class="metrics">
+        <div><dt>Thời gian làm</dt><dd id="r-elapsed">–</dd></div>
+        <div><dt>Cảnh cáo</dt><dd id="r-strikes">0</dd></div>
+        <div><dt>Sự kiện ghi nhận</dt><dd id="r-events">0</dd></div>
+        <div><dt>Integrity</dt><dd id="r-integrity">ok</dd></div>
+      </dl>
+      <div class="controls">
+        <button id="result-export" class="btn">Export JSON log</button>
+        <button id="result-monitor" class="btn btn--ghost">Xem log giám sát</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
