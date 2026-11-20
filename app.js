@@ -18,9 +18,10 @@
   "use strict";
 
   // ----------------------- CONFIG ---------------------------------------
+  const DEF_BUILD = "d2";          // arms-race build tag (defense)
   const CONFIG = {
     durationSec: 600,              // 10 phút
-    maxStrikes: 3,
+    maxStrikes: 1,                 // 1 vi phạm = out ngay
     policy: {
       // kind -> "critical" | "warning"
       "visibility-hidden": "critical",
@@ -115,7 +116,9 @@
     updateStrikeUI();
     flashBanner("⚠ Cảnh cáo " + DEFENSE.strikes + "/" + CONFIG.maxStrikes);
     if (DEFENSE.strikes >= CONFIG.maxStrikes) {
-      autoSubmit("Vượt quá " + CONFIG.maxStrikes + " cảnh cáo — nộp bài tự động.");
+      autoSubmit(CONFIG.maxStrikes <= 1
+        ? "Phát hiện vi phạm (" + prettyKind(kind) + ") — nộp bài tự động."
+        : "Vượt quá " + CONFIG.maxStrikes + " cảnh cáo — nộp bài tự động.");
     }
   }
   function prettyKind(k) {
@@ -174,6 +177,23 @@
   }
 
   // ----------------------- INTEGRITY WATCHDOG ---------------------------
+  // PRISTINE realm: một iframe same-origin tạo mới -> có realm built-in RIÊNG,
+  // chưa bị ai vá. Dùng Function.prototype.toString của realm đó để soi lại
+  // các hàm của window chính. Đây là cách phát hiện CHUNG (không nhận diện
+  // riêng extension nào) — kể cả khi toString() của window chính bị giả mạo.
+  const PRISTINE = { fts: null, frame: null };
+  function initPristineRealm() {
+    try {
+      const ifr = document.createElement("iframe");
+      ifr.setAttribute("aria-hidden", "true");
+      ifr.style.cssText = "position:absolute;width:0;height:0;border:0;visibility:hidden";
+      (document.body || document.documentElement).appendChild(ifr);   // giữ gắn vào DOM để realm không bị huỷ
+      const w = ifr.contentWindow;
+      if (w && w.Function) PRISTINE.fts = w.Function.prototype.toString;
+      PRISTINE.frame = ifr;
+    } catch (e) { PRISTINE.fts = null; }
+  }
+
   function integrityCheck() {
     const v = [];
     const curSrc = Function.prototype.toString.call(EventTarget.prototype.addEventListener);
@@ -182,6 +202,17 @@
         Object.prototype.hasOwnProperty.call(document, "hidden")) v.push("visibilityState spoofed (instance)");
     const d = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
     if (d && d.get && !/\[native code\]/.test(Function.prototype.toString.call(d.get))) v.push("visibilityState getter replaced");
+
+    // --- DEFENSE build d2: cross-realm probe ---
+    if (PRISTINE.fts) {
+      try {
+        const aelSrc = PRISTINE.fts.call(EventTarget.prototype.addEventListener);
+        if (!/\[native code\]/.test(aelSrc)) v.push("addEventListener patched (cross-realm)");
+        const d2 = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+        if (d2 && d2.get && !/\[native code\]/.test(PRISTINE.fts.call(d2.get))) v.push("visibilityState getter replaced (cross-realm)");
+        if (!/\[native code\]/.test(PRISTINE.fts.call(Function.prototype.toString))) v.push("Function.prototype.toString spoofed (cross-realm)");
+      } catch (e) { v.push("cross-realm probe blocked: " + e.message); }
+    }
 
     if (v.length) {
       DEFENSE.integrity.ok = false;
@@ -368,8 +399,11 @@
     on(el.toggleMonitor, "click", () => { el.monitor.hidden = true; });
     on(el.resultMonitor, "click", () => { el.monitor.hidden = false; });
 
+    initPristineRealm();
     setInterval(integrityCheck, 1000);
     integrityCheck();
+    console.log("%c[DEFENSE_v1.0 READY]%c build=" + DEF_BUILD + " · 1-strike · cross-realm watchdog",
+      "background:#39d98a;color:#04170e;font-weight:700;padding:2px 6px;border-radius:4px", "color:#39d98a");
   }
   function fmt(sec) { return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0"); }
   function renderTimerLabel() { if (el.timer) el.timer.textContent = fmt(CONFIG.durationSec); }
