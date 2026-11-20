@@ -1,4 +1,4 @@
-﻿/* =====================================================================
+/* =====================================================================
    DEFENSE_v1.0 — app.js  (Exam + anti-cheat auto-submit)
    Red/blue lab defensive surface.
 
@@ -21,10 +21,10 @@
   const DEF_BUILD = "d3";          // arms-race build tag (defense)
   const CONFIG = {
     durationSec: 600,              // 10 phút
-    maxStrikes: 1,                 // 1 vi phạm = out ngay
+    maxStrikes: 3,                 // d4+: đủ 3 lần phát hiện mới CHỐT CỜ (không auto-nộp)
     // d3 server-authoritative: đặt URL (vd "http://localhost:8799") để bật.
     // null -> degrade về d2 (client-only) — dùng cho GitHub Pages tĩnh.
-    server: null,
+    server: "http://localhost:8799",
     policy: {
       // kind -> "critical" | "warning"
       "visibility-hidden": "critical",
@@ -64,6 +64,7 @@
     submitted: false,
     submitReason: null,
     integrity: { ok: true, violations: [] },
+    flagged: false, flagReason: null, serverFlagged: false,   // d4+: chốt cờ, KHÔNG auto-nộp
     counters: { visibility: 0, blur: 0, fullscreen: 0, keydown: 0, rapid: 0, integrity: 0 },
   };
   Object.defineProperty(window, "__DEFENSE__", { value: DEFENSE, writable: false, configurable: false });
@@ -104,26 +105,36 @@
   // ----------------------- VIOLATION ENGINE -----------------------------
   // Mọi tín hiệu bất thường đi qua đây -> ghi log + thực thi chính sách.
   function violation(kind, detail) {
-    if (DEFENSE.submitted) return;
+    if (DEFENSE.submitted) return;                 // đã nộp (thủ công/hết giờ) thì thôi
     const level = CONFIG.policy[kind] || "warning";
     const sev = level === "critical" ? SEV.ALERT : SEV.WARN;
-    log(kind, sev, detail || "");
+    log(kind, sev, detail || "");                  // MỌI phát hiện đều vào bảng log
     if (window.D3Guard && window.D3Guard.available) window.D3Guard.reportViolation(kind);
 
-    if (level === "critical") {
-      flashBanner("⛔ VI PHẠM NGHIÊM TRỌNG");
-      autoSubmit("Phát hiện: " + prettyKind(kind) + " — nộp bài tự động.");
-      return;
-    }
-    // warning -> strike
+    // CHÍNH SÁCH MỚI (giám sát liên tục): KHÔNG auto-nộp, KHÔNG khoá.
+    // Mỗi phát hiện = +1 strike; đủ maxStrikes thì CHỐT CỜ nhưng vẫn cho thi tiếp.
     DEFENSE.strikes++;
     updateStrikeUI();
-    flashBanner("⚠ Cảnh cáo " + DEFENSE.strikes + "/" + CONFIG.maxStrikes);
     if (DEFENSE.strikes >= CONFIG.maxStrikes) {
-      autoSubmit(CONFIG.maxStrikes <= 1
-        ? "Phát hiện vi phạm (" + prettyKind(kind) + ") — nộp bài tự động."
-        : "Vượt quá " + CONFIG.maxStrikes + " cảnh cáo — nộp bài tự động.");
+      markFlagged("Đủ " + DEFENSE.strikes + " lần phát hiện — phiên bị gắn cờ (" +
+        prettyKind(kind) + ").");
+    } else {
+      flashBanner("⚠ Phát hiện " + DEFENSE.strikes + "/" + CONFIG.maxStrikes +
+        " · " + prettyKind(kind));
     }
+  }
+
+  // Chốt cờ vi phạm: ghi log + banner đỏ cố định, nhưng KHÔNG nộp, KHÔNG khoá —
+  // watchdog tiếp tục chạy & tiếp tục đẩy log các phát hiện sau.
+  function markFlagged(reason) {
+    DEFENSE.flagged = true;
+    if (!DEFENSE.flagReason) DEFENSE.flagReason = reason;
+    log("flagged", SEV.ALERT, reason);
+    if (el.banner) {
+      el.banner.textContent = "⛔ GẮN CỜ · " + DEFENSE.strikes + " vi phạm (vẫn đang giám sát)";
+      el.banner.className = "status status--alert";
+    }
+    clearTimeout(flashTid);   // giữ banner cờ, không để flash ghi đè
   }
   function prettyKind(k) {
     return ({
@@ -270,12 +281,10 @@
     log("boot", SEV.INFO, "bài thi bắt đầu trên " + location.host);
     startTimer();
 
-    // Nếu watchdog ĐÃ phát hiện can thiệp trước giờ bắt đầu -> xử ngay (1-strike).
+    // Nếu watchdog ĐÃ phát hiện can thiệp trước giờ bắt đầu -> tính thành strike
+    // (KHÔNG auto-nộp). Mỗi dấu hiệu tamper khác nhau = 1 lần phát hiện, vào log.
     if (!DEFENSE.integrity.ok) {
-      autoSubmit("Phát hiện can thiệp mã giám sát (" +
-        (DEFENSE.integrity.violations[DEFENSE.integrity.violations.length - 1] || "tamper") +
-        ") — nộp bài tự động.");
-      return;
+      DEFENSE.integrity.violations.forEach((m) => violation("integrity-tamper", m));
     }
 
     // d3: nếu cấu hình server, mở phiên server-authoritative.
@@ -283,8 +292,11 @@
       log("d3", SEV.INFO, "đang kết nối server xác thực…");
       window.D3Guard.start(CONFIG.server, {
         onFlagged: function (reasons) {
+          if (DEFENSE.serverFlagged) return;           // server sticky -> chỉ báo 1 lần
+          DEFENSE.serverFlagged = true;
           const r = reasons && reasons.length ? reasons[reasons.length - 1] : "bất thường";
-          autoSubmit("SERVER phát hiện: " + r);
+          log("server-flag", SEV.ALERT, "SERVER phát hiện: " + r);
+          markFlagged("SERVER phát hiện: " + r);        // gắn cờ, KHÔNG nộp
         }
       }).then(function (r) {
         if (r) log("d3", SEV.INFO, "server OK · session " + String(r.sessionId).slice(0, 8) + "…");
@@ -380,7 +392,8 @@
     const payload = {
       meta: { version: DEFENSE.version, origin: DEFENSE.origin, href: location.href,
         userAgent: navigator.userAgent, startedAt: DEFENSE.startedAt, exportedAt: new Date().toISOString(),
-        submitted: DEFENSE.submitted, submitReason: DEFENSE.submitReason },
+        submitted: DEFENSE.submitted, submitReason: DEFENSE.submitReason,
+        flagged: DEFENSE.flagged, flagReason: DEFENSE.flagReason, strikes: DEFENSE.strikes },
       counters: DEFENSE.counters, strikes: DEFENSE.strikes, integrity: DEFENSE.integrity,
       answers: DEFENSE.answers, logs: DEFENSE.logs,
     };

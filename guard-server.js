@@ -23,6 +23,7 @@
     sessionId: null,
     nonce: null,
     seq: 0,
+    prevPerf: null,   // d4: mốc performance.now() của nhịp trước (đo throttle)
     hb: null,
     onFlagged: null,
     pendingViolations: [],
@@ -63,6 +64,12 @@
     const tick = async () => {
       if (G.stopped) return;
       try {
+        // d4: Δ performance.now() giữa 2 nhịp TẠO beacon. Tab ẩn -> setInterval
+        // bị throttle -> delta này GIÃN RA ngay cả khi visibilityState bị spoof.
+        // Server dùng để RAISE cờ (xem server.py mục 2c).
+        const tNow = (window.performance && performance.now) ? performance.now() : Date.now();
+        const clientDtMs = G.prevPerf == null ? null : Math.round(tNow - G.prevPerf);
+        G.prevPerf = tNow;
         const r = await api("/beacon", {
           sessionId: G.sessionId,
           seq: G.seq++,
@@ -70,6 +77,7 @@
           // nhưng NHỊP tới của beacon thì không spoof được.
           claimedVisible: document.visibilityState === "visible",
           claimedFocused: typeof document.hasFocus === "function" ? document.hasFocus() : true,
+          clientDtMs: clientDtMs,
           nonce: G.nonce,
           violations: G.pendingViolations.splice(0),
         });

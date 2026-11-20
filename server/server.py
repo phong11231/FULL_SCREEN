@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 # =====================================================================
-# DEFENSE d3 — server.py  (Python stdlib, no deps)
+# DEFENSE d4 — server.py  (Python stdlib, no deps)
 # Server-authoritative proctoring backend for the red/blue lab.
+#
+# NÂNG CẤP d4 so với d3 (chống báo nhầm + bịt lỗ):
+#   • Phân biệt lag-mạng vs throttle bằng ĐỘ DÀI bất thường, không phải 1 cú
+#     khựng lẻ: cần khựng-khi-'visible' LẶP LẠI (GAP_STRIKES_NEEDED) mới kết
+#     luận. Một cú lag thoáng qua KHÔNG còn bị cờ oan (sửa false positive của d3).
+#   • Kích hoạt nhánh im lặng dài (SILENCE_MS) -> nghi rời/đóng tab (d3 bỏ quên).
+#   • Dùng clientDtMs (đồng hồ nội bộ client tự đo) để RAISE cờ khi client khai
+#     đồng hồ bị ghì mà vẫn 'visible' — nhưng KHÔNG dùng nó để gỡ nghi, vì số
+#     này client giả được; tín hiệu gốc vẫn là NHỊP server tự đo.
 #
 # Why this wins the arms race:
 #   A client-only watchdog can always be blinded by an extension that runs
@@ -24,9 +33,11 @@
 import json, os, secrets, time, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HB_INTERVAL_MS = 1000          # client gửi heartbeat mỗi ~1s
-GAP_FLAG_MS    = 3500          # khựng > 3.5s => nghi ngờ throttle (tab ẩn)
-SILENCE_MS     = 8000          # im lặng quá lâu => coi như rời/đóng tab
+HB_INTERVAL_MS     = 1000      # client gửi heartbeat mỗi ~1s
+GAP_FLAG_MS        = 3500      # 1 nhịp khựng > 3.5s => NGHI (chưa kết luận)
+GAP_STRIKES_NEEDED = 3         # d4: cần khựng-khi-'visible' LẶP LẠI 3 lần mới kết luận
+                               #     (1-2 cú lẻ = lag thoáng qua, KHÔNG cờ)
+SILENCE_MS         = 8000      # im lặng > 8s => nghi rời/đóng tab (cờ ngay)
 
 # Ngân hàng đề (ĐÁP ÁN chỉ nằm ở server — client không bao giờ thấy)
 QUESTIONS = [
@@ -54,6 +65,7 @@ def new_session():
         "nonce": nonce,          # nonce client phải echo ở beacon kế tiếp
         "last_arrival": now_ms(),
         "last_seq": -1,
+        "gap_strikes": 0,        # d4: số nhịp khựng-khi-'visible' LIÊN TIẾP
         "flags": [],             # danh sách lý do bị cờ (không trùng)
         "beacons": 0,
         "closed": False,
@@ -77,23 +89,43 @@ def handle_beacon(body):
     claimed_focused = bool(body.get("claimedFocused", True))
     echoed = body.get("nonce")
     client_violations = body.get("violations") or []
+    client_dt = body.get("clientDtMs", None)   # d4: đồng hồ nội bộ client tự khai
 
-    # (1) Nonce-chain: beacon phải echo đúng nonce server cấp lần trước.
+    # (1) Nonce-chain: beacon phải echo đúng nonce server cấp lần trước. (HARD)
     if echoed != st["nonce"]:
         add_flag(st, "nonce-mismatch (kênh báo cáo bị can thiệp/replay)")
 
-    # (2) Tín hiệu KHÔNG spoof được: nhịp khựng trong khi khai 'visible'.
-    #     Tab ẩn -> trình duyệt throttle rAF/timer -> beacon giãn ra, dù
-    #     client (bị extension vá) vẫn khai visibilityState='visible'.
-    if gap > GAP_FLAG_MS and claimed_visible and st["last_seq"] >= 0:
-        add_flag(st, f"heartbeat khựng {gap}ms nhưng client khai 'visible' "
-                     f"=> nghi tab bị ẩn/throttle (tamper)")
+    # (2) Nhịp tới (server TỰ đo — không spoof được). Phân biệt lag vs throttle
+    #     bằng ĐỘ DÀI bất thường, không phải một cú khựng lẻ.
+    if st["last_seq"] >= 0:
+        if gap > SILENCE_MS:
+            # (2a) im lặng rất lâu -> nghi rời/đóng tab (cờ ngay, độc lập 'visible')
+            add_flag(st, f"im lặng {gap}ms (> {SILENCE_MS}ms) => nghi rời/đóng tab")
+            st["gap_strikes"] = 0
+        elif gap > GAP_FLAG_MS and claimed_visible:
+            # (2b) khựng khi khai 'visible' -> cần LẶP LẠI mới kết luận. Lag mạng
+            #      thoáng qua chỉ 1 cú rồi hồi; tab ẩn thì khựng LIÊN TỤC.
+            st["gap_strikes"] += 1
+            if st["gap_strikes"] >= GAP_STRIKES_NEEDED:
+                add_flag(st, f"throttle KÉO DÀI {st['gap_strikes']} nhịp "
+                             f"(gap≈{gap}ms) nhưng khai 'visible' => tamper "
+                             f"(không phải lag thoáng qua)")
+        else:
+            st["gap_strikes"] = 0   # nhịp hồi phục -> coi như lag thoáng qua
 
-    # (3) Client tự thú vi phạm (nếu không bị vá) -> cũng cờ.
+    # (2c) Client TỰ KHAI đồng hồ nội bộ bị ghì mà vẫn 'visible' -> bằng chứng
+    #      mạnh (bắt được cheat KHÔNG giả clientDtMs, vd ATTACK v2). LƯU Ý: số này
+    #      client giả được -> CHỈ dùng để RAISE, không dùng để gỡ nghi; cheat khai
+    #      clientDtMs nhỏ thì để (2b) nhịp-server lo.
+    if client_dt is not None and client_dt > GAP_FLAG_MS and claimed_visible:
+        add_flag(st, f"đồng hồ client {client_dt}ms bị ghì nhưng khai 'visible' "
+                     f"=> tab ẩn/throttle (tamper)")
+
+    # (3) Client tự thú vi phạm (nếu không bị vá) -> cũng cờ. (HARD)
     for v in client_violations:
         add_flag(st, f"client-reported: {v}")
 
-    # (4) Mất focus theo khai báo -> cờ (chính sách 1-strike).
+    # (4) Mất focus theo khai báo -> cờ (chính sách 1-strike). (HARD)
     if not claimed_focused:
         add_flag(st, "client khai mất focus")
 
@@ -108,6 +140,8 @@ def handle_beacon(body):
         "nonce": st["nonce"],
         "reasons": st["flags"],
         "gapMs": gap,
+        "gapStrikes": st["gap_strikes"],
+        "clientDtMs": client_dt,
     }
 
 def grade(answers):
@@ -183,13 +217,14 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8799
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"[DEFENSE d3] server-authoritative proctoring on http://localhost:{port}")
+    print(f"[DEFENSE d4] server-authoritative proctoring on http://localhost:{port}")
     print(f"  endpoints: POST /session/start · POST /beacon · POST /submit · GET /health")
-    print(f"  hbInterval={HB_INTERVAL_MS}ms  gapFlag={GAP_FLAG_MS}ms  (LAB ONLY)")
+    print(f"  hbInterval={HB_INTERVAL_MS}ms gapFlag={GAP_FLAG_MS}ms "
+          f"strikesNeeded={GAP_STRIKES_NEEDED} silence={SILENCE_MS}ms  (LAB ONLY)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\n[DEFENSE d3] stopped.")
+        print("\n[DEFENSE d4] stopped.")
 
 if __name__ == "__main__":
     main()

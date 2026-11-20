@@ -85,6 +85,71 @@ E2E trong trình duyệt: session mở, heartbeat chạy, submit -> server chấ
 → **DEFENSE d3 THẮNG** kể cả trước hướng tấn công tàng hình hơn, vì nó không dựa
 vào việc "soi mã client" nữa.
 
+## Vòng 4 — DEFENSE siết d3 → d4 (bỏ báo nhầm) · ATTACK thành test-harness
+
+**Bối cảnh:** d3 đã thắng về cấu trúc, nhưng soi kỹ logic chấm lộ ra **2 lỗ chính
+xác** (không phải lỗ bảo mật, mà là chất lượng phán quyết):
+
+1. **Báo nhầm lag ↔ throttle.** d3 cờ ngay khi `gap > 3500ms && khai 'visible'`.
+   Nhưng tab **đang hiện** gặp **nghẽn mạng thật > 3.5s** tạo **wire-signature GIỐNG
+   HỆT** "tab ẩn + khai visible" → server không phân biệt được → **1 cú lag thoáng
+   qua bị kết án**, mà cờ lại **sticky** → oan cả phiên.
+2. **Nhánh im lặng chết.** `SILENCE_MS = 8000` khai báo nhưng `handle_beacon` không
+   dùng → rời/đóng tab > 8s không có lý do cờ riêng.
+
+> **Quyết định (tiếp nối Vòng 3):** KHÔNG leo thang tàng hình phía tấn công (v3).
+> Thay vào đó biến `attack/content.js` thành **test-harness** đo độ chính xác của d3,
+> rồi dồn sức **làm cứng phán quyết server**. ATTACK v2 giữ nguyên ở
+> `attack/versions/content.v2.js` làm đối thủ tham chiếu.
+
+### 🛡️ DEFENSE d4 — chấm theo ĐỘ DÀI bất thường, không theo 1 cú khựng
+- **Lag vs throttle:** khựng-khi-'visible' phải **lặp lại ≥ `GAP_STRIKES_NEEDED` (=3)
+  nhịp liên tiếp** mới kết luận tamper. 1-2 cú lag lẻ → chưa đủ → **ok** (sửa
+  false-positive). Tab ẩn thì khựng **liên tục** → đủ strike → cờ.
+- **Im lặng:** `gap > SILENCE_MS` → cờ "nghi rời/đóng tab" (độc lập 'visible').
+- **`clientDtMs` (tín hiệu mới):** `guard-server.js` gửi Δ `performance.now()` giữa 2
+  nhịp. Tab ẩn → `setInterval` bị throttle → delta **giãn ra dù visibility bị spoof**.
+  Server dùng để **RAISE** cờ khi "đồng hồ client bị ghì mà vẫn khai visible" → bắt
+  được cheat **không** giả `clientDtMs` (vd ATTACK v2, vốn không đụng beacon).
+  **Giới hạn thừa nhận:** `clientDtMs` do client khai nên **giả được** → chỉ dùng để
+  RAISE, KHÔNG để gỡ nghi; cheat khai nhỏ thì **nhịp server (2b) lo**.
+
+### 🔁 Chính sách GIÁM SÁT LIÊN TỤC (bỏ auto-nộp)
+- **Không còn auto-nộp khi phát hiện vi phạm.** Mỗi phát hiện (client watchdog hoặc
+  server) = **+1 strike** và **vào bảng log** `#monitor` hiển thị tại chỗ.
+- Đủ **`maxStrikes = 3`** → **CHỐT CỜ** phiên (banner đỏ + báo server) nhưng **vẫn cho
+  làm bài** và watchdog **tiếp tục** ghi log các phát hiện sau. Không khoá, không nộp.
+- Chỉ nộp khi **hết giờ** hoặc **thí sinh tự bấm nộp**. (Chấm/kết luận vẫn ở server.)
+
+### 🧪 Test-harness (thay HUD attack cũ)
+Bọc `fetch` ở tầng wire (không vá DOM, **không tàng hình**, chỉ top-frame). Công tắc
+từng kịch bản + in verdict server mỗi beacon ra console (`__HARNESS__.help()`):
+
+| Kịch bản | Mô phỏng | Kỳ vọng d4 |
+|---|---|---|
+| `lag` / `jitter` | 1 cú khựng (tab hiện) | **ok** — không báo nhầm |
+| `sustainedThrottle` | khựng ~4.2s **liên tục** + khai 'visible' | **flagged** (TP thật) |
+| `spoofClientClock` | nói dối `clientDtMs=1000` | ghép sustained → **vẫn flagged** nhờ (2b) |
+| `longSilence` | im > 8s | **flagged** (SILENCE_MS) |
+| `nonceReplay` / `dupBurst` / `contradictFocus` | phá nonce-chain / nhân bản / mất focus | **flagged** |
+
+### Kết quả
+```
+server.py: py_compile OK.
+Kỳ vọng thiết kế — CHƯA chạy E2E sống trong môi trường soạn thảo (không có node,
+bị chặn serve). CẦN verify trên máy khi reload extension + chạy harness:
+  lag (1 cú)            -> ok        (d3 từng flag; d4 phải hết oan)
+  sustainedThrottle     -> flagged   sau ~GAP_STRIKES_NEEDED nhịp
+  sustained + spoofClock-> flagged   (2c bị né, 2b vẫn bắt)
+  longSilence           -> flagged   "nghi rời/đóng tab"
+```
+
+**Bài học Vòng 4:** mọi **scalar do client khai** (visible, focus, cả `clientDtMs`)
+đều **giả được** → tín hiệu tin cậy duy nhất là **nhịp tới server tự đo**; phân biệt
+lag ↔ throttle phải dựa vào **độ dài/độ lặp** của bất thường, không phải một mẫu đơn lẻ.
+
+---
+
 ## Kết luận arms-race
 > Client-side chỉ **nâng chi phí** cho kẻ gian; ai kiểm soát realm trước (extension
 > `document_start`) có lợi thế cấu trúc, nên cuộc đua tàng hình thuần client **không
@@ -93,23 +158,27 @@ vào việc "soi mã client" nữa.
 
 ---
 
-### Cách chạy d3 (local / Kali)
+### Cách chạy d4 (local / Kali)
 ```bash
-# 1) server xác thực
+# 1) server xác thực (in "[DEFENSE d4] …")
 python3 defense-server/server.py 8799
 
-# 2) phục vụ web (thư mục defense), rồi sửa trong app.js:
-#    CONFIG.server = "http://localhost:8799"   (đang để null cho GitHub Pages tĩnh)
+# 2) phục vụ web (thư mục defense).
+#    app.js ĐÃ trỏ CONFIG.server = "http://localhost:8799"
+#    (đặt null nếu muốn deploy tĩnh GitHub Pages — khi đó về chế độ d2 client-only)
 python3 -m http.server 8000 --directory defense
+
+# 3) nạp test-harness: chrome://extensions → Load unpacked → attack/ → Reload
+#    rồi mở http://localhost:8000, F12, gõ __HARNESS__.help()
 ```
 
 ### Lịch sử phiên bản (lưu trên USB)
 ```
-attack/content.js              = ATTACK v2 (đối thủ cố định)
+attack/content.js              = D3/D4 TEST HARNESS (đo chính xác, KHÔNG tàng hình)
 attack/versions/content.v1.js  = ATTACK v1
-attack/versions/content.v2.js  = ATTACK v2 (bản lưu)
-defense/app.js                 = DEFENSE d3 (1-strike + cross-realm + hỗ trợ server)
-defense/guard-server.js        = client beacon layer cho d3
-defense-server/server.py       = server-authoritative backend (Python stdlib)
+attack/versions/content.v2.js  = ATTACK v2 (đối thủ tham chiếu, bản lưu)
+defense/app.js                 = DEFENSE (1-strike + cross-realm + hỗ trợ server)
+defense/guard-server.js        = client beacon layer (d4: gửi thêm clientDtMs)
+defense-server/server.py       = DEFENSE d4 server-authoritative (Python stdlib)
 defense/versions/app.d2.js     = DEFENSE d2 (bản lưu)
 ```

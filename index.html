@@ -9,7 +9,8 @@
 <body>
   <!--
     DEFENSE_v1.0 — Trang thi có giám sát chống gian lận (red/blue lab).
-    Platform-agnostic: không URL cứng. Auto-nộp khi phát hiện bất thường.
+    Platform-agnostic: không URL cứng. Giám sát LIÊN TỤC: ghi log mọi phát hiện;
+    đủ 3 lần thì gắn cờ phiên (KHÔNG tự động nộp bài).
     LƯU Ý: tín hiệu client chỉ mang tính hỗ trợ; hệ thống thật phải chấm &
     xác thực lại ở server. Đây là bề mặt phòng thủ để kiểm thử.
   -->
@@ -21,7 +22,7 @@
       <p class="subtitle">Bài kiểm tra được giám sát</p>
       <ul class="rules">
         <li>Bài thi chạy ở chế độ <b>toàn màn hình</b>.</li>
-        <li><b>CHỈ CẦN 1 VI PHẠM → TỰ ĐỘNG NỘP NGAY.</b></li>
+        <li><b>Giám sát LIÊN TỤC</b>: mỗi phát hiện được <b>ghi log</b>; đủ <b>3 lần</b> → phiên bị <b>gắn cờ</b> (vẫn cho làm bài, <b>KHÔNG tự nộp</b>).</li>
         <li>Vi phạm gồm: rời tab / thu nhỏ, mất focus, thoát fullscreen, phím đáng ngờ (F12, Ctrl+C/V…), hoặc bị phát hiện <b>can thiệp mã giám sát</b>.</li>
         <li>Hết giờ (<b id="dur-label">10:00</b>) → tự nộp.</li>
       </ul>
