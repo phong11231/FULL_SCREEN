@@ -1,4 +1,4 @@
-/* =====================================================================
+﻿/* =====================================================================
    DEFENSE_v1.0 — app.js  (Exam + anti-cheat auto-submit)
    Red/blue lab defensive surface.
 
@@ -269,6 +269,14 @@
     setBanner("[DEFENSE_v1.0 READY]", "status--ready");
     log("boot", SEV.INFO, "bài thi bắt đầu trên " + location.host);
     startTimer();
+
+    // Nếu watchdog ĐÃ phát hiện can thiệp trước giờ bắt đầu -> xử ngay (1-strike).
+    if (!DEFENSE.integrity.ok) {
+      autoSubmit("Phát hiện can thiệp mã giám sát (" +
+        (DEFENSE.integrity.violations[DEFENSE.integrity.violations.length - 1] || "tamper") +
+        ") — nộp bài tự động.");
+      return;
+    }
 
     // d3: nếu cấu hình server, mở phiên server-authoritative.
     if (CONFIG.server && window.D3Guard) {
